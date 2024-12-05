@@ -13,17 +13,15 @@ const MyAssets = () => {
                 setLoading(true);
 
                 const response = await axios.get("http://localhost:8081/api/accounts");
-                const fetchedAssets = response.data.map((item) =>
-                    new UserAsset(
-                        item.id,
-                        item.user,
-                        item.asset,
-                        item.quantity,
-                        item.averagePrice,
-                        item.unitCurrency,
-                        item.purchase
-                    )
-                );
+                const fetchedAssets = response.data.map((item) => ({
+                    id : item.id,
+                    user : item.user,
+                    asset : item.asset,
+                    quantity : item.quantity,
+                    averagePrice : item.averagePrice,
+                    unitCurrency : item.unitCurrency,
+                    purchaseDate : item.purchaseDate,
+                }));
                 setAssets(fetchedAssets);
             } catch (err) {
                 console.log(err);
@@ -52,12 +50,13 @@ const MyAssets = () => {
                     </tr>
                 </thead>
                 <tbody>
-                    {assets.map((asset) => (
-                        <tr key={asset.id}>
+                    {assets.map((asset, index) => (
+                        <tr key={asset.id || index}>
                             <td>{asset.asset?.ticker || "Unknown"}</td>
                             <td>{asset.averagePrice}</td>
                             <td>{asset.unitCurrency}</td>
                             <td>{asset.quantity}</td>
+                            <td>{asset.asset?.currentPrice || "N/A"}</td>
                         </tr>
                     ))}
                 </tbody>
