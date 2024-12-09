@@ -1,6 +1,6 @@
-import React, {useEffect, useState} from "react";
+import React, {useEffect, useState, useRef} from "react";
 import axios from "axios";
-import {Chart, Line, Pie} from "react-chartjs-2";
+import {Chart, Pie} from "react-chartjs-2";
 import {
     Chart as ChartJS,
     ArcElement,
@@ -15,6 +15,9 @@ import {
 
 import {CandlestickController, CandlestickElement } from "chartjs-chart-financial";
 import "chartjs-adapter-luxon";
+
+import SockJS from "sockjs-client";
+import {Stomp} from "@stomp/stompjs";
 
 ChartJS.register(
     ArcElement, 
@@ -38,6 +41,21 @@ const MyAssets = () => {
     const [candleChartData, setCandleChartData] = useState(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedTicker, setSelectedTicker] = useState(null);
+
+    const [currentUserNickname, setCurrentUserNickname] = useState("");
+
+    useEffect(() => {
+        axios.get("http://localhost:8081/api/user/me")
+            .then(response => {
+                setCurrentUserNickname(response.data.nickname);
+            })
+            .catch(err => console.error("Failed to fetch current user", err));
+    }, []);
+
+    const [messages, setMessages] = useState([]);
+    const [newMessage, setNewMessage] = useState("");
+    const stompClientRef = useRef(null);
+    const subscriptionRef = useRef(null);
 
     const handleTickerClick = async (ticker) => {
         setSelectedTicker(ticker);
@@ -95,6 +113,20 @@ const MyAssets = () => {
             
             setCandleChartData(candleData);
             setIsModalOpen(true);
+
+            const historyResponse = await axios.get(`http://localhost:8081/api/chat/history?ticker=${ticker}`);
+            const historyData = historyResponse.data;
+            if (subscriptionRef.current) {
+                subscriptionRef.current.unsubscribe();
+            }
+
+            if (stompClientRef.current && stompClientRef.current.connected) {
+                subscriptionRef.current = stompClientRef.current.subscribe(`/topic/chat/${ticker}`, (message) => {
+                    const msgBody = JSON.parse(message.body);
+                    setMessages(prev => [...prev, msgBody]);
+                });
+            }
+            setMessages(historyData);
         } catch (err) {
             console.error("Error fetching chart data : ", err);
         }
@@ -176,9 +208,37 @@ const MyAssets = () => {
         fetchAssets();
     }, []);
 
+    useEffect(() => {
+        const socket = new SockJS("http://localhost:8081/ws");
+        const stompClient = Stomp.over(socket);
+        stompClient.connect({}, frame => {
+            console.log("Connected : " + frame);
+            stompClientRef.current = stompClient;
+        });
+
+        return () => {
+            if (stompClientRef.current && stompClientRef.current.connected) {
+                stompClientRef.current.disconnect(() => {
+                    console.log("Disconnected");
+                });
+            }
+        };
+    }, []);
+
     if (loading) return <div>로딩 중...</div>;
     if (error) return <div>{error}</div>;
 
+    const sendMessage = () => {
+        if (!selectedTicker || !newMessage.trim()) return;
+        const msg = {
+            ticker : selectedTicker,
+            sender : currentUserNickname,
+            content : newMessage
+        };
+        stompClientRef.current.send("/app/chat.sendMessage", {}, JSON.stringify(msg));
+        setMessages(prev => [...prev, msg]);
+        setNewMessage("");
+    }
     return (
         <div className="container">
             <h1 style = {{textAlign : "left"}}>My Assets</h1>
@@ -246,6 +306,26 @@ const MyAssets = () => {
                                 }}
                             />
                         )}
+                        <div style = {{marginTop : "20px"}}>
+                            <h3>채팅방 ({selectedTicker})</h3>
+                            <div style={{border : "1px solid #ccc", height : "200px", overflowY : "auto", marginBottom : "10px"}}>
+                                {messages
+                                    .filter(m => m.ticker === selectedTicker)
+                                    .map((m, i) => (
+                                        <div key={i} style={{ textAlign : m.sender === currentUserNickname ? "right" : "left"}}>
+                                            <strong>{m.sender} : </strong> {m.content}
+                                        </div>
+                                    ))}
+                            </div>
+                            <input
+                                type = "text"
+                                value = {newMessage}
+                                onChange = {(e) => setNewMessage(e.target.value)}
+                                placeholder = "메시지를 입력하세요"
+                                style = {{width : "80%", marginRight : "10px"}}
+                            />
+                            <button onClick = {sendMessage}>전송</button>
+                        </div>
                     </div>
                 </div>
             )}
