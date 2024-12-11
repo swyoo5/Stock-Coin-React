@@ -405,177 +405,128 @@
 
 
 import React, { useEffect, useState, useRef } from "react";
+import {
+    Chart as ChartJS,
+    ArcElement,
+    Tooltip,
+    Legend,
+    CategoryScale,
+    LinearScale,
+    LineElement,
+    PointElement,
+    TimeScale
+} from "chart.js";
+import { CandlestickController, CandlestickElement } from "chartjs-chart-financial";
+import "chartjs-adapter-luxon";
+import SockJS from "sockjs-client";
+import { Stomp } from "@stomp/stompjs";
+import api from "../api/api";
+import main from "../styles/main";
 import AssetTable from "./AssetTable";
 import PieChart from "./PieChart";
-import CandleChartModal from "./CandleChartModal";
+import Modal from "./Modal";
+import CandleChart from "./CandleChart";
 import ChatRoom from "./ChatRoom";
-import api from "../api/api";
-import "../styles/MyAssets.css";
+import { useTicker } from "../hook/useTicker";
+import { useAssets } from "../hook/useAssets";
+import { useWebSocket } from "../hook/useWebSocket";
 
+ChartJS.register(
+    ArcElement,
+    Tooltip,
+    Legend,
+    CategoryScale,
+    LinearScale,
+    LineElement,
+    PointElement,
+    CandlestickController,
+    CandlestickElement,
+    TimeScale
+);
+
+// 데이터 흐름 : 백엔드 => response.data => fetchedAssets => setAssets => assets
 const MyAssets = () => {
-    // State variables
-    const [assets, setAssets] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState("");
-    const [pieChartData, setPieChartData] = useState(null);
-    const [candleChartData, setCandleChartData] = useState(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedTicker, setSelectedTicker] = useState(null);
     const [currentUserNickname, setCurrentUserNickname] = useState("");
-    const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState("");
-    const stompClientRef = useRef(null);
+    const subscriptionRef = useRef(null);
+    const stompClientRef = useWebSocket("http://localhost:8081/ws");
+    const {
+        assets, 
+        pieChartData, 
+        loading, 
+        error,
+        setLoading, 
+        setAssets, 
+        setPieChartData, 
+        setError,
+    } = useAssets();
+    const {candleChartData, messages, fetchTickerData} = useTicker();
+    const handleTickerClick = async (ticker) => {
+        setSelectedTicker(ticker);
+        await fetchTickerData(ticker, setIsModalOpen, stompClientRef, subscriptionRef);
+    }
 
-    // Fetch user nickname
     useEffect(() => {
         (async () => {
             try {
                 const response = await api.get("/api/user/me");
+                console.log("Fetched user : ", response.data);
                 setCurrentUserNickname(response.data.nickname);
             } catch (err) {
-                console.error("Failed to fetch current user:", err);
+                console.error("failed to fetch current user", err);
             }
         })();
     }, []);
+    
+    
 
-    // Fetch assets
     useEffect(() => {
-        const fetchAssets = async () => {
-            try {
-                setLoading(true);
-                const response = await api.get("/api/accounts", { withCredentials: true });
-                const data = response.data;
+        const stompClient = Stomp.over(() => new SockJS("http://localhost:8081/ws"));
+        stompClient.connect({}, frame => {
+            console.log("Connected : " + frame);
+            stompClientRef.current = stompClient;
+        });
 
-                if (Array.isArray(data)) {
-                    const fetchedAssets = data.map((item) => ({
-                        currency: item.currency || "Unknown",
-                        balance: item.balance,
-                        avgBuyPrice: item.avg_buy_price,
-                        unitCurrency: item.unit_currency,
-                        currentPrice: null,
-                        valuation: 0,
-                    }));
-                    setAssets(fetchedAssets);
-
-                    const promises = fetchedAssets
-                        .filter((asset) => asset.currency !== "Unknown" && asset.currency !== "KRW")
-                        .map(async (asset) => {
-                            try {
-                                const tickerResponse = await api.get(`/api/ticker?ticker=KRW-${asset.currency}`);
-                                const tickerData = tickerResponse.data[0];
-                                return {
-                                    ...asset,
-                                    currentPrice: tickerData.trade_price,
-                                    valuation: asset.balance * tickerData.trade_price,
-                                };
-                            } catch {
-                                return { ...asset, currentPrice: "N/A", valuation: 0 };
-                            }
-                        });
-
-                    const enrichedAssets = await Promise.all(promises);
-                    setAssets(enrichedAssets);
-
-                    const totalValuation = enrichedAssets.reduce(
-                        (sum, asset) => sum + asset.valuation, 0
-                    );
-
-                    const pieData = {
-                        labels: enrichedAssets.map((asset) => asset.currency),
-                        datasets: [
-                            {
-                                label: "자산 비중",
-                                data: enrichedAssets.map((asset) =>
-                                    totalValuation > 0
-                                        ? ((asset.valuation / totalValuation) * 100).toFixed(2)
-                                        : 0
-                                ),
-                                backgroundColor: enrichedAssets.map(
-                                    () => `#${Math.floor(Math.random() * 16777215).toString(16)}`
-                                ),
-                                borderWidth: 1,
-                            },
-                        ],
-                    };
-                    setPieChartData(pieData);
-                }
-            } catch (err) {
-                setError("에러")
-                console.error("Failed to fetch assets:", err);
-            } finally {
-                setLoading(false);
+        return () => {
+            if (stompClientRef.current && stompClientRef.current.connected) {
+                stompClientRef.current.disconnect(() => {
+                    console.log("Disconnected");
+                });
             }
         };
-
-        fetchAssets();
     }, []);
+    
 
-    // Handle ticker click
-    const handleTickerClick = async (ticker) => {
-        setSelectedTicker(ticker);
-        try {
-            const response = await api.get(`/api/chart?ticker=${ticker}&count=200`);
-            const reversedData = response.data.reverse();
-            const candleData = {
-                datasets: [
-                    {
-                        label: `${ticker} Daily Prices`,
-                        data: reversedData.map((point) => ({
-                            x: new Date(point.candle_date_time_kst).getTime(),
-                            o: point.opening_price,
-                            h: point.high_price,
-                            l: point.low_price,
-                            c: point.trade_price,
-                        })),
-                        borderColor: "rgba(75, 192, 192, 1)",
-                        borderWidth: 1,
-                    },
-                ],
-            };
-            setCandleChartData(candleData);
-            setIsModalOpen(true);
-
-            const historyResponse = await api.get(`/api/chat/history?ticker=${ticker}`);
-            const historyData = historyResponse.data;
-            setMessages(historyData);
-        } catch (err) {
-            console.error("Failed to fetch chart data:", err);
-        }
-    };
-
-    // Send message
+    
     const sendMessage = () => {
         if (!selectedTicker || !newMessage.trim()) return;
         const now = new Date();
-        const formattedTime = now.toLocaleTimeString("en-US", {
-            hour12: false,
-            hour: "2-digit",
-            minute: "2-digit",
-        });
+        const formattedTime = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", "second": "2-digit" })
         const msg = {
             ticker: selectedTicker,
             sender: currentUserNickname,
             content: newMessage,
             time: formattedTime,
         };
-        stompClientRef.current?.send("/app/chat.sendMessage", {}, JSON.stringify(msg));
+        // console.log("!!!!!!!!!!!!!!!!!!!!!" + currentUserNickname);
+        stompClientRef.current.send("/app/chat.sendMessage", {}, JSON.stringify(msg));
+        // setMessages(prev => [...prev, msg]);
         setNewMessage("");
-    };
-
+    }
+    
     if (loading) return <div>로딩 중...</div>;
     if (error) return <div>{error}</div>;
 
     return (
-        <div className="my-assets">
-            <h1>My Assets</h1>
-            <AssetTable assets={assets} onTickerClick={handleTickerClick} />
-            {pieChartData && <PieChart data={pieChartData} />}
-            {isModalOpen && (
-                <CandleChartModal
-                    selectedTicker={selectedTicker}
-                    candleChartData={candleChartData}
-                    onClose={() => setIsModalOpen(false)}
-                >
+        <div className="container">
+            <h1 style={main.header}>My Assets</h1>
+            <div style={main.wrapper}>
+                <AssetTable assets={assets} handleTickerClick={handleTickerClick} />
+                <PieChart data={pieChartData} />
+                <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)}>
+                    <CandleChart selectedTicker={selectedTicker} candleChartData={candleChartData}/>
                     <ChatRoom
                         selectedTicker={selectedTicker}
                         messages={messages}
@@ -584,10 +535,9 @@ const MyAssets = () => {
                         setNewMessage={setNewMessage}
                         sendMessage={sendMessage}
                     />
-                </CandleChartModal>
-            )}
+                </Modal>
+            </div>
         </div>
-    );
-};
-
+    )
+}
 export default MyAssets;
